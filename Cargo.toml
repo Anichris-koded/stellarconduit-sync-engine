@@ -54,6 +54,35 @@ rmp-serde = "1.1"
 ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
 sha2 = "0.10.8"
 
+# Zero-Knowledge Proofs (Issue #53 — ZK spend-cap compliance)
+#
+# `bulletproofs 5.0` provides the Bulletproofs range-proof implementation
+# over the Ristretto255 group (no trusted setup required, which is essential
+# for a decentralised mesh where there is no party that could run a trusted
+# ceremony). It internally uses `curve25519-dalek 4.1.3`, which is the same
+# major version that `ed25519-dalek 2.x` pulls in — Cargo deduplicates them
+# into a single copy in the dependency graph, keeping the binary footprint
+# small (critical for mobile wallets).
+#
+# `merlin 3.0` is the Fiat-Shamir transcript used by `bulletproofs`; it must
+# be declared as a direct dependency because our proof-generation code builds
+# the transcript (with domain-separation labels) before handing it to the
+# prover — having it only as a transitive dep would leave the version
+# underspecified and would not pin it across dependency updates.
+#
+# `rand 0.8` — the CSPRNG used to sample Pedersen blinding factors during
+# proof generation. Already in dev-dependencies; promoted to a regular
+# dependency here because `SpendCapProver::generate_proof` is part of the
+# production API (devices call it at runtime, not only in tests).
+bulletproofs = "5.0.0"
+merlin = "3.0.0"
+rand = "0.8.5"
+# Explicit direct dependency on curve25519-dalek so we can use Scalar,
+# CompressedRistretto, and RistrettoPoint in zk_spend_proof.rs.
+# Version 4.1.3 matches what bulletproofs 5.0.0 uses, ensuring Cargo
+# deduplicates to a single copy in the build graph.
+curve25519-dalek = { version = "4.1.3", features = ["rand_core"] }
+
 # Stellar StrKey (SEP-0023) encoding/decoding — official Stellar Development
 # Foundation tooling. Used to turn the raw ed25519 `origin_pubkey` carried on
 # every `TransactionEnvelope` into the `G...`-prefixed account address the
@@ -82,7 +111,6 @@ env_logger = "0.11"
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.12"
-rand = "0.8.5"
 tempfile = "3.27"
 
 
@@ -126,4 +154,9 @@ harness = false
 [[bench]]
 name = "storage_throughput"
 path = "benches/storage_throughput.rs"
+harness = false
+
+[[bench]]
+name = "zk_spend_proof"
+path = "benches/zk_spend_proof.rs"
 harness = false

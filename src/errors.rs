@@ -106,6 +106,27 @@ pub enum SyncEngineError {
         required_threshold: u32,
     },
 
+    /// Returned when a [`crate::queue::zk_spend_proof::SpendCapProver`] is
+    /// given invalid inputs — empty amounts list, zero cap, or a spend that
+    /// already exceeds the cap (a proof of a false statement is impossible).
+    /// This is a permanent, caller-code error.
+    #[error("invalid input for ZK spend-cap proof generation: {0}")]
+    ZkProofInput(String),
+
+    /// Returned when the Bulletproofs prover itself fails internally (e.g.
+    /// a generator-capacity mismatch or a library-level error). Distinguishing
+    /// this from `ZkProofInput` lets callers decide whether to surface a user
+    /// error message vs. log an internal fault.
+    #[error("ZK spend-cap proof generation failed: {0}")]
+    ZkProofGeneration(String),
+
+    /// Returned when [`crate::queue::zk_spend_proof::SpendCapVerifier`]
+    /// rejects a proof — either the Bulletproofs range proof is invalid or
+    /// the homomorphic sum check fails (meaning the claimed spend is not
+    /// actually under the cap, or the proof has been tampered with).
+    #[error("ZK spend-cap proof verification failed: {0}")]
+    ZkProofVerification(String),
+
     #[error("SQLite connection error: {0}")]
     ConnectionError(#[from] tokio_rusqlite::Error),
 
@@ -144,6 +165,9 @@ impl SyncEngineError {
     /// | `EmergencyQueueLimitExceeded` | RequiresEscalation | The spending guard has tripped. A simple retry without user re-confirmation would be a security bypass. The embedding wallet must surface this to the user (biometric re-auth or explicit override) before queuing is retried. |
     /// | `UnknownMultisigSigner` | Permanent | The presented signing key is not in the account's authorised signer set. No retry will change the signer registry without an explicit key-management operation. |
     /// | `MultisigThresholdNotMet` | Permanent | The accumulated signer weight is below the required threshold. In this context the error means promotion was attempted prematurely; more signatures are needed, which is a caller flow issue, not a transient I/O problem. |
+    /// | `ZkProofInput` | Permanent | Invalid inputs for ZK proof generation (empty amounts, zero cap, sum >= cap). These are caller-code bugs that will never succeed on retry. |
+    /// | `ZkProofGeneration` | Permanent | The Bulletproofs prover failed internally. Retrying the same inputs will produce the same failure; the caller must investigate the root cause. |
+    /// | `ZkProofVerification` | Permanent | A ZK proof failed verification. The proof is invalid or tampered; retrying will not make an invalid proof valid. |
     /// | `ConnectionError` | Transient | `tokio_rusqlite` errors typically arise from thread-pool contention, busy-timeout, or a momentary lock on the WAL file. These conditions usually resolve within milliseconds and are appropriate to retry with back-off. |
     /// | `SqliteError` | Transient | Raw `rusqlite` errors (e.g. `SQLITE_BUSY`, `SQLITE_LOCKED`) are similarly caused by disk/locking contention and are generally safe to retry. Callers that need to distinguish truly fatal SQLite errors (e.g. corruption) may inspect the inner `rusqlite::Error` further, but the default classification is Transient. |
     /// | `SerializationError` | Permanent | A value could not be encoded to MessagePack. This reflects a type-system mismatch or an unencodable value; retrying the same data will produce the same error. |
@@ -164,6 +188,9 @@ impl SyncEngineError {
             SyncEngineError::MultisigThresholdNotMet { .. } => ErrorClass::Permanent,
             SyncEngineError::SerializationError(_) => ErrorClass::Permanent,
             SyncEngineError::DeserializationError(_) => ErrorClass::Permanent,
+            SyncEngineError::ZkProofInput(_) => ErrorClass::Permanent,
+            SyncEngineError::ZkProofGeneration(_) => ErrorClass::Permanent,
+            SyncEngineError::ZkProofVerification(_) => ErrorClass::Permanent,
 
             // ── RequiresEscalation: needs human/on-chain intervention ──
             SyncEngineError::UnresolvedConflict(_) => ErrorClass::RequiresEscalation,
@@ -226,6 +253,9 @@ mod tests {
             SyncEngineError::SqliteError(rusqlite::Error::InvalidQuery),
             SyncEngineError::SerializationError(rmp_serde::encode::Error::UnknownLength),
             SyncEngineError::DeserializationError(rmp_serde::decode::Error::Syntax("test".into())),
+            SyncEngineError::ZkProofInput("bad input".into()),
+            SyncEngineError::ZkProofGeneration("prover failed".into()),
+            SyncEngineError::ZkProofVerification("proof rejected".into()),
         ]
     }
 
