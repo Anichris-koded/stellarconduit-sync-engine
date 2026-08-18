@@ -79,12 +79,29 @@ hex = "0.4"
 log = "0.4"
 env_logger = "0.11"
 
+[features]
+# Enable the `loom` concurrency-model-checker for exhaustive interleaving
+# tests. Activating this feature substitutes loom's instrumented sync
+# primitives for std's, which is incompatible with normal execution (loom
+# panics if the test harness does not drive it through `loom::model`).
+# Run loom tests with:
+#   cargo test --features loom loom_test_
+loom = []
+
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.12"
 rand = "0.8.5"
 tempfile = "3.27"
 
+# loom: exhaustive concurrency model checker for the single-owner contract
+# proofs in src/queue/priority.rs and src/queue/sequence.rs.
+# Version 0.7 is the latest stable release that supports the std::sync
+# primitive shims (Mutex, Arc) we use in the loom test scaffolding.
+# Declared as a non-optional dev-dependency (Cargo does not allow optional
+# dev-dependencies); the feature flag `loom` gates whether the loom test
+# modules are compiled in, not whether loom itself is present.
+loom = { version = "0.7", features = ["futures"] }
 
 clap = { version = "4.5", features = ["derive"] }
 
