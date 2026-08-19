@@ -79,14 +79,9 @@ hex = "0.4"
 log = "0.4"
 env_logger = "0.11"
 
-[features]
-# Enable the `loom` concurrency-model-checker for exhaustive interleaving
-# tests. Activating this feature substitutes loom's instrumented sync
-# primitives for std's, which is incompatible with normal execution (loom
-# panics if the test harness does not drive it through `loom::model`).
-# Run loom tests with:
-#   cargo test --features loom loom_test_
-loom = []
+# Post-Quantum Cryptography
+pqcrypto-dilithium = "0.5"
+pqcrypto-traits = "0.3"
 
 [dev-dependencies]
 tokio-test = "0.4"
