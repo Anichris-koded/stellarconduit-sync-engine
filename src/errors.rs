@@ -138,6 +138,9 @@ pub enum SyncEngineError {
 
     #[error("deserialization error: {0}")]
     DeserializationError(#[from] rmp_serde::decode::Error),
+
+    #[error("post-quantum signature verification failed")]
+    PqVerificationFailed,
 }
 
 impl SyncEngineError {
@@ -188,9 +191,7 @@ impl SyncEngineError {
             SyncEngineError::MultisigThresholdNotMet { .. } => ErrorClass::Permanent,
             SyncEngineError::SerializationError(_) => ErrorClass::Permanent,
             SyncEngineError::DeserializationError(_) => ErrorClass::Permanent,
-            SyncEngineError::ZkProofInput(_) => ErrorClass::Permanent,
-            SyncEngineError::ZkProofGeneration(_) => ErrorClass::Permanent,
-            SyncEngineError::ZkProofVerification(_) => ErrorClass::Permanent,
+            SyncEngineError::PqVerificationFailed => ErrorClass::Permanent,
 
             // ── RequiresEscalation: needs human/on-chain intervention ──
             SyncEngineError::UnresolvedConflict(_) => ErrorClass::RequiresEscalation,
@@ -253,9 +254,7 @@ mod tests {
             SyncEngineError::SqliteError(rusqlite::Error::InvalidQuery),
             SyncEngineError::SerializationError(rmp_serde::encode::Error::UnknownLength),
             SyncEngineError::DeserializationError(rmp_serde::decode::Error::Syntax("test".into())),
-            SyncEngineError::ZkProofInput("bad input".into()),
-            SyncEngineError::ZkProofGeneration("prover failed".into()),
-            SyncEngineError::ZkProofVerification("proof rejected".into()),
+            SyncEngineError::PqVerificationFailed,
         ]
     }
 
@@ -416,5 +415,10 @@ mod tests {
         let dec_err =
             SyncEngineError::DeserializationError(rmp_serde::decode::Error::Syntax("test".into()));
         assert_eq!(dec_err.classify(), ErrorClass::Permanent);
+
+        assert_eq!(
+            SyncEngineError::PqVerificationFailed.classify(),
+            ErrorClass::Permanent
+        );
     }
 }
