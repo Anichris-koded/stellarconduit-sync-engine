@@ -15,6 +15,12 @@ license = "Apache-2.0"
 # which needs `cdylib` for the same reason (its own `src/ffi.rs`).
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+[features]
+# Gates the loom-based concurrency model-checker tests in
+# src/queue/priority.rs and src/queue/sequence.rs.
+# Run them with:  cargo test --features loom loom_test_
+loom = []
+
 [dependencies]
 # Shared mesh envelope types, signing, and relay-chain proofs
 stellarconduit-core = { git = "https://github.com/StellarConduit/stellarconduit-core.git", rev = "da4c057" }
