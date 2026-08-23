@@ -73,7 +73,12 @@ sha2 = "0.10.8"
 # `rand 0.8` — the CSPRNG used to sample Pedersen blinding factors during
 # proof generation. Already in dev-dependencies; promoted to a regular
 # dependency here because `SpendCapProver::generate_proof` is part of the
-# production API (devices call it at runtime, not only in tests).
+# production API (devices call it at runtime, not only in tests). Also the
+# seeded and entropy-backed RNG for the Laplace mechanism in `src/metrics.rs`
+# (privacy-preserving metrics export): we sample Laplace(b = Δ/ε) noise
+# in-process rather than taking on a specialised differential-privacy crate,
+# and `StdRng` gives reproducible tests via a seed plus production entropy
+# via `from_entropy`.
 bulletproofs = "5.0.0"
 merlin = "3.0.0"
 rand = "0.8.5"
@@ -107,16 +112,6 @@ chrono = "0.4"
 hex = "0.4"
 log = "0.4"
 env_logger = "0.11"
-
-# Seeded and entropy-backed RNG for the Laplace mechanism in
-# `src/metrics.rs` (privacy-preserving metrics export). We sample
-# Laplace(b = Δ/ε) noise in-process rather than taking on a specialised
-# differential-privacy crate: the mechanism is a dozen lines, the
-# calibration is documented against this crate's actual counter
-# sensitivity, and `StdRng` gives reproducible tests via a seed plus
-# production entropy via `from_entropy`. `0.8` is already in this crate's
-# graph (tests, examples, and `ed25519-dalek`).
-rand = "0.8.5"
 
 # Post-Quantum Cryptography
 pqcrypto-dilithium = "0.5"

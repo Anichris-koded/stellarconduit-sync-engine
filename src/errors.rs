@@ -215,6 +215,9 @@ impl SyncEngineError {
             SyncEngineError::SerializationError(_) => ErrorClass::Permanent,
             SyncEngineError::DeserializationError(_) => ErrorClass::Permanent,
             SyncEngineError::PqVerificationFailed => ErrorClass::Permanent,
+            SyncEngineError::ZkProofInput(_) => ErrorClass::Permanent,
+            SyncEngineError::ZkProofGeneration(_) => ErrorClass::Permanent,
+            SyncEngineError::ZkProofVerification(_) => ErrorClass::Permanent,
             SyncEngineError::ImportTargetNotEmpty => ErrorClass::Permanent,
             SyncEngineError::IncompatibleSnapshotSchemaVersion { .. } => ErrorClass::Permanent,
 
@@ -280,6 +283,9 @@ mod tests {
             SyncEngineError::SerializationError(rmp_serde::encode::Error::UnknownLength),
             SyncEngineError::DeserializationError(rmp_serde::decode::Error::Syntax("test".into())),
             SyncEngineError::PqVerificationFailed,
+            SyncEngineError::ZkProofInput("empty amounts".into()),
+            SyncEngineError::ZkProofGeneration("prover fault".into()),
+            SyncEngineError::ZkProofVerification("invalid range proof".into()),
             SyncEngineError::ImportTargetNotEmpty,
             SyncEngineError::IncompatibleSnapshotSchemaVersion {
                 found: 1,
@@ -448,6 +454,22 @@ mod tests {
 
         assert_eq!(
             SyncEngineError::PqVerificationFailed.classify(),
+            ErrorClass::Permanent
+        );
+    }
+
+    #[test]
+    fn test_zk_proof_errors_are_permanent() {
+        assert_eq!(
+            SyncEngineError::ZkProofInput("empty amounts".into()).classify(),
+            ErrorClass::Permanent
+        );
+        assert_eq!(
+            SyncEngineError::ZkProofGeneration("prover fault".into()).classify(),
+            ErrorClass::Permanent
+        );
+        assert_eq!(
+            SyncEngineError::ZkProofVerification("invalid range proof".into()).classify(),
             ErrorClass::Permanent
         );
     }
