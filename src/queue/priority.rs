@@ -127,7 +127,8 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 use std::marker::PhantomData;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::Duration;
 
 use stellarconduit_core::message::types::TransactionEnvelope;
 
@@ -288,6 +289,10 @@ impl EmergencyGuard {
 pub struct OutboundTxQueue {
     heap: BinaryHeap<QueuedTx>,
     emergency_guard: Option<EmergencyGuard>,
+    /// Monotonic clock used to timestamp pushes. Injected so tests can use a
+    /// deterministic [`crate::clock::MockClock`] and production can use a
+    /// [`crate::clock::HybridClock`].
+    clock: Arc<dyn Clock>,
     /// Enforces the single-owner concurrency contract at compile time.
     ///
     /// `PhantomData<*mut ()>` makes this type `!Send + !Sync` because raw
@@ -302,7 +307,7 @@ pub struct OutboundTxQueue {
 
 impl Default for OutboundTxQueue {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(crate::clock::HybridClock::new()))
     }
 }
 
@@ -311,6 +316,7 @@ impl OutboundTxQueue {
         Self {
             heap: BinaryHeap::new(),
             emergency_guard: None,
+            clock,
             _single_owner: PhantomData,
         }
     }
@@ -322,6 +328,7 @@ impl OutboundTxQueue {
         Self {
             heap: BinaryHeap::new(),
             emergency_guard: Some(EmergencyGuard::new(guard_config)),
+            clock,
             _single_owner: PhantomData,
         }
     }
@@ -632,7 +639,7 @@ mod tests {
     /// below validates the structural precondition.
     #[test]
     fn test_outbound_tx_queue_is_not_send_or_sync() {
-        let q = OutboundTxQueue::new();
+        let q = OutboundTxQueue::new(Arc::new(crate::clock::MockClock::new(100)));
         // Confirm _single_owner has type PhantomData<*mut ()>.
         let _marker: PhantomData<*mut ()> = q._single_owner;
     }
@@ -693,7 +700,8 @@ mod loom_tests {
     #[test]
     fn loom_test_concurrent_push_pop_never_loses_or_duplicates_entry() {
         loom::model(|| {
-            let queue = Arc::new(Mutex::new(OutboundTxQueue::new()));
+            let clock = std::sync::Arc::new(crate::clock::MockClock::new(1000));
+            let queue = Arc::new(Mutex::new(OutboundTxQueue::new(clock)));
 
             // Thread A: push envelope 0xAA at Normal priority.
             let q_a = Arc::clone(&queue);
@@ -758,7 +766,8 @@ mod loom_tests {
         loom::model(|| {
             // Pre-populate with one envelope so both threads have something
             // to pop immediately, making the push/pop interleaving denser.
-            let mut initial = OutboundTxQueue::new();
+            let clock = std::sync::Arc::new(crate::clock::MockClock::new(1000));
+            let mut initial = OutboundTxQueue::new(clock);
             initial
                 .push_at(loom_envelope(0x01), TxPriority::Normal, 50)
                 .unwrap();
@@ -832,8 +841,11 @@ mod loom_tests {
     fn loom_test_concurrent_emergency_guard_never_exceeds_limit() {
         loom::model(|| {
             // Guard allows at most 2 Emergency entries in a 1-hour window.
+            let clock = std::sync::Arc::new(crate::clock::MockClock::new(1000));
             let config = EmergencyGuardConfig::new(2, Duration::from_secs(3600));
-            let queue = Arc::new(Mutex::new(OutboundTxQueue::with_emergency_guard(config)));
+            let queue = Arc::new(Mutex::new(OutboundTxQueue::with_emergency_guard(
+                config, clock,
+            )));
 
             let q_a = Arc::clone(&queue);
             let thread_a = loom::thread::spawn(move || {
@@ -893,8 +905,11 @@ mod loom_tests {
     #[test]
     fn loom_test_concurrent_emergency_guard_over_limit_rejects_excess() {
         loom::model(|| {
+            let clock = std::sync::Arc::new(crate::clock::MockClock::new(1000));
             let config = EmergencyGuardConfig::new(2, Duration::from_secs(3600));
-            let queue = Arc::new(Mutex::new(OutboundTxQueue::with_emergency_guard(config)));
+            let queue = Arc::new(Mutex::new(OutboundTxQueue::with_emergency_guard(
+                config, clock,
+            )));
 
             // Thread A tries to push 2 Emergency entries.
             let q_a = Arc::clone(&queue);
