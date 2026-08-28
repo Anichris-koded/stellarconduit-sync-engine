@@ -24,7 +24,18 @@
 //! * **8 payments** — an unusual high-watermark scenario. The padded
 //!   aggregation size is 16 (8 + 1 slack → 9 → m = 16).
 //!
-//! ## Performance Characterisation (desktop baseline, 2024 hardware)
+//! ## Performance Characterisation
+//!
+//! The benchmark must be run on the target device class for release decisions.
+//! This repository's CI runner timed out before completing the original
+//! benchmark configuration, so no mobile timing is claimed here. That result
+//! is itself evidence that this implementation needs measurement on a real
+//! mobile device before being treated as a production per-payment scheme.
+//!
+//! The following table is historical illustrative output, not a measured
+//! acceptance result; replace it with captured output from the target device.
+//!
+//! ## Historical Desktop Reference (not a current measurement)
 //!
 //! | Window size | m (padded) | Proof generation | Proof verification | Proof size |
 //! |-------------|-----------|------------------|--------------------|------------|
@@ -91,7 +102,8 @@ fn bench_proof_generation(c: &mut Criterion) {
     // Reduce sample size because proof generation involves EC operations
     // and takes 10–100ms per iteration — the default 100 samples would make
     // the bench suite take many minutes.
-    group.sample_size(20);
+    group.sample_size(10);
+    group.measurement_time(std::time::Duration::from_secs(5));
 
     for n in [1usize, 4, 8] {
         group.bench_with_input(BenchmarkId::new("window_size", n), &n, |b, &window_size| {
@@ -114,7 +126,8 @@ fn bench_proof_generation(c: &mut Criterion) {
 /// from device-side proof-generation latency.
 fn bench_proof_verification(c: &mut Criterion) {
     let mut group = c.benchmark_group("ZkSpendCap/proof_verification");
-    group.sample_size(30);
+    group.sample_size(10);
+    group.measurement_time(std::time::Duration::from_secs(5));
 
     for n in [1usize, 4, 8] {
         // Pre-generate the proof outside the timed loop so we only measure
@@ -125,7 +138,7 @@ fn bench_proof_verification(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("window_size", n), &proof, |b, proof| {
             b.iter(|| {
-                SpendCapVerifier::verify_proof(proof)
+                SpendCapVerifier::verify_proof_against_cap(proof, CAP)
                     .expect("proof verification must not fail in benchmark")
             });
         });
@@ -140,6 +153,7 @@ fn bench_proof_verification(c: &mut Criterion) {
 fn bench_proof_sizes(c: &mut Criterion) {
     let mut group = c.benchmark_group("ZkSpendCap/proof_size_bytes");
     group.sample_size(10);
+    group.measurement_time(std::time::Duration::from_secs(3));
 
     for n in [1usize, 4, 8] {
         let amounts = sample_amounts(n);

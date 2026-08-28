@@ -439,13 +439,26 @@ impl SpendCapVerifier {
     /// Returns [`SyncEngineError::ZkProofInput`] if the proof structure is
     /// malformed (e.g. empty commitments, invalid bytes).
     pub fn verify_proof(proof: &SpendCapProof) -> Result<(), SyncEngineError> {
-        Self::verify_proof_with_context(proof, &[])
+        Self::verify_proof_against_cap_with_context(proof, proof.cap, &[])
     }
 
-    /// Verify a [`SpendCapProof`] with extra context bytes that must match
-    /// those used during proof generation.
-    pub fn verify_proof_with_context(
+    /// Verify a proof against the relay's configured cap.
+    ///
+    /// The cap is deliberately supplied separately from the proof. A relay
+    /// must not trust a cap value chosen by the device, otherwise a malicious
+    /// prover could simply claim compliance against an arbitrarily large cap.
+    pub fn verify_proof_against_cap(
         proof: &SpendCapProof,
+        expected_cap: u64,
+    ) -> Result<(), SyncEngineError> {
+        Self::verify_proof_against_cap_with_context(proof, expected_cap, &[])
+    }
+
+    /// Verify a [`SpendCapProof`] against the relay's configured cap and extra
+    /// context bytes that must match those used during proof generation.
+    pub fn verify_proof_against_cap_with_context(
+        proof: &SpendCapProof,
+        expected_cap: u64,
         context: &[u8],
     ) -> Result<(), SyncEngineError> {
         // ── Structural validation ─────────────────────────────────────────
@@ -454,10 +467,16 @@ impl SpendCapVerifier {
                 "proof contains no amount commitments".into(),
             ));
         }
-        if proof.cap == 0 {
+        if expected_cap == 0 {
             return Err(SyncEngineError::ZkProofInput(
-                "proof.cap must be > 0".into(),
+                "expected cap must be > 0".into(),
             ));
+        }
+        if proof.cap != expected_cap {
+            return Err(SyncEngineError::ZkProofVerification(format!(
+                "proof cap ({}) does not match verifier cap ({expected_cap})",
+                proof.cap
+            )));
         }
 
         // ── Deserialise the range proof ───────────────────────────────────
@@ -492,7 +511,7 @@ impl SpendCapVerifier {
         // ── Verify the Bulletproofs range proof ───────────────────────────
         let pc_gens = PedersenGens::default();
         let bp_gens = BulletproofGens::new(RANGE_BITS, m);
-        let mut transcript = Self::build_transcript(context, proof.cap);
+        let mut transcript = Self::build_transcript(context, expected_cap);
 
         range_proof
             .verify_multiple(
@@ -534,7 +553,7 @@ impl SpendCapVerifier {
         let r_total = Scalar::from_bytes_mod_order(proof.blinding_sum);
 
         // Compute RHS = commit(cap − 1, r_total).
-        let rhs = pc_gens.commit(Scalar::from(proof.cap - 1), r_total);
+        let rhs = pc_gens.commit(Scalar::from(expected_cap - 1), r_total);
 
         if lhs != rhs {
             return Err(SyncEngineError::ZkProofVerification(
@@ -605,7 +624,7 @@ mod tests {
             .generate_proof()
             .expect("proof generation must succeed");
 
-        SpendCapVerifier::verify_proof(&proof)
+        SpendCapVerifier::verify_proof_against_cap(&proof, cap)
             .expect("valid compliant proof must verify without error");
     }
 
@@ -649,7 +668,7 @@ mod tests {
         let mut tampered_proof = proof.clone();
         tampered_proof.cap = 400_000_000u64; // sum = 500M > 400M
 
-        let err = SpendCapVerifier::verify_proof(&tampered_proof)
+        let err = SpendCapVerifier::verify_proof_against_cap(&tampered_proof, 400_000_000)
             .expect_err("tampered cap must fail verification");
         assert!(
             matches!(err, SyncEngineError::ZkProofVerification(_)),
@@ -688,13 +707,13 @@ mod tests {
 
         // Both proofs verify successfully — the verifier cannot tell them apart
         // from the return value alone.
-        SpendCapVerifier::verify_proof(&proof_a).expect("proof A must verify");
-        SpendCapVerifier::verify_proof(&proof_b).expect("proof B must verify");
+        SpendCapVerifier::verify_proof_against_cap(&proof_a, cap).expect("proof A must verify");
+        SpendCapVerifier::verify_proof_against_cap(&proof_b, cap).expect("proof B must verify");
 
         // The verifier's output is identical (unit Ok(())) for both proofs.
         // This is the core of the privacy guarantee at the API surface.
-        let result_a = SpendCapVerifier::verify_proof(&proof_a);
-        let result_b = SpendCapVerifier::verify_proof(&proof_b);
+        let result_a = SpendCapVerifier::verify_proof_against_cap(&proof_a, cap);
+        let result_b = SpendCapVerifier::verify_proof_against_cap(&proof_b, cap);
         assert!(result_a.is_ok());
         assert!(result_b.is_ok());
 
@@ -722,7 +741,8 @@ mod tests {
         let proof = SpendCapProver::new(vec![1_000u64], 10_000u64)
             .generate_proof()
             .expect("single-amount proof");
-        SpendCapVerifier::verify_proof(&proof).expect("single-amount proof must verify");
+        SpendCapVerifier::verify_proof_against_cap(&proof, 10_000u64)
+            .expect("single-amount proof must verify");
     }
 
     #[test]
@@ -732,7 +752,8 @@ mod tests {
         let proof = SpendCapProver::new(vec![cap - 1], cap)
             .generate_proof()
             .expect("amount = cap - 1 proof");
-        SpendCapVerifier::verify_proof(&proof).expect("amount = cap - 1 must verify");
+        SpendCapVerifier::verify_proof_against_cap(&proof, cap)
+            .expect("amount = cap - 1 must verify");
     }
 
     #[test]
@@ -814,7 +835,8 @@ mod tests {
             .expect("proof with envelope IDs");
 
         assert_eq!(proof.envelope_ids, ids);
-        SpendCapVerifier::verify_proof(&proof).expect("proof with IDs must verify");
+        SpendCapVerifier::verify_proof_against_cap(&proof, 1_000u64)
+            .expect("proof with IDs must verify");
     }
 
     #[test]
@@ -830,17 +852,18 @@ mod tests {
             .expect("proof with context");
 
         // Verifying with the correct context succeeds.
-        SpendCapVerifier::verify_proof_with_context(&proof, &ctx)
+        SpendCapVerifier::verify_proof_against_cap_with_context(&proof, cap, &ctx)
             .expect("verification with matching context");
 
         // Verifying with no context fails (different transcript state).
-        let err = SpendCapVerifier::verify_proof_with_context(&proof, &[])
+        let err = SpendCapVerifier::verify_proof_against_cap_with_context(&proof, cap, &[])
             .expect_err("verification with wrong context must fail");
         assert!(matches!(err, SyncEngineError::ZkProofVerification(_)));
 
         // Verifying with a different context also fails.
-        let err = SpendCapVerifier::verify_proof_with_context(&proof, b"wrong-nonce")
-            .expect_err("verification with different context must fail");
+        let err =
+            SpendCapVerifier::verify_proof_against_cap_with_context(&proof, cap, b"wrong-nonce")
+                .expect_err("verification with different context must fail");
         assert!(matches!(err, SyncEngineError::ZkProofVerification(_)));
     }
 
@@ -852,7 +875,8 @@ mod tests {
         let proof = SpendCapProver::new(amounts, cap)
             .generate_proof()
             .expect("8-amount proof");
-        SpendCapVerifier::verify_proof(&proof).expect("8-amount proof must verify");
+        SpendCapVerifier::verify_proof_against_cap(&proof, cap)
+            .expect("8-amount proof must verify");
     }
 
     #[test]

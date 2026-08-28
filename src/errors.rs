@@ -243,6 +243,9 @@ impl SyncEngineError {
             // ── Transient: environmental failures worth retrying with back-off ──
             SyncEngineError::ConnectionError(_) => ErrorClass::Transient,
             SyncEngineError::SqliteError(_) => ErrorClass::Transient,
+            SyncEngineError::EncryptionError(_) => ErrorClass::Permanent,
+            SyncEngineError::EncryptionKeyMismatch => ErrorClass::Permanent,
+            SyncEngineError::DecryptionFailed => ErrorClass::Permanent,
         }
     }
 }

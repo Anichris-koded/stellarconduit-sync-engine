@@ -82,6 +82,9 @@ sha2 = "0.10.8"
 bulletproofs = "5.0.0"
 merlin = "3.0.0"
 rand = "0.8.5"
+rand_chacha = "0.3.1"
+aes-gcm = "0.10.3"
+argon2 = "0.5.3"
 # Explicit direct dependency on curve25519-dalek so we can use Scalar,
 # CompressedRistretto, and RistrettoPoint in zk_spend_proof.rs.
 # Version 4.1.3 matches what bulletproofs 5.0.0 uses, ensuring Cargo
