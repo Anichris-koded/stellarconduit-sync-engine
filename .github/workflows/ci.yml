@@ -50,6 +50,9 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --workspace
 
+      - name: cargo test --features loom loom_test_
+        run: cargo test --features loom loom_test_
+
   bench:
     name: Benchmarks
     runs-on: ubuntu-latest
