@@ -142,6 +142,21 @@ pub enum SyncEngineError {
     #[error("post-quantum signature verification failed")]
     PqVerificationFailed,
 
+    /// Returned when encryption or decryption operations fail.
+    #[error("encryption error: {0}")]
+    EncryptionError(String),
+
+    /// Returned when attempting to open an encrypted database without
+    /// providing the correct key, or when attempting to open an unencrypted
+    /// database as if it were encrypted.
+    #[error("database encryption key mismatch or missing key")]
+    EncryptionKeyMismatch,
+
+    /// Returned when an encrypted database is opened with a key that doesn't
+    /// match the one used to create it.
+    #[error("decryption failed: wrong key or corrupted data")]
+    DecryptionFailed,
+
     /// Returned by `SyncEngineDb::import_snapshot` when the target database
     /// already contains rows in any of its tables. Import is documented and
     /// implemented as reject-if-nonempty (see that function's doc comment for
