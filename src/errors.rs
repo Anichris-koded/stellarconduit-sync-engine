@@ -63,8 +63,35 @@ pub enum SyncEngineError {
     #[error("invalid settlement state transition from {from:?} to {to:?}")]
     InvalidStateTransition { from: String, to: String },
 
+    #[error("dispatch backpressure window is full ({max_in_flight} in flight); wait for acknowledgments or timeouts before dispatching more")]
+    BackpressureWindowFull { max_in_flight: usize },
+
+    #[error("message is already in flight in the dispatch window")]
+    DuplicateInFlight,
+
+    #[error("invalid dispatch window configuration: {0}")]
+    InvalidDispatchWindow(String),
+
     #[error("conflict between envelopes could not be resolved off-chain: {0}")]
     UnresolvedConflict(String),
+
+    /// Returned by `crate::conflict::vrf_tiebreak` when a VRF tie-break proof
+    /// is malformed, fails verification, or was produced by a party other than
+    /// the deterministically selected evaluator. The tie-break is the
+    /// last-resort step of conflict resolution (issue #067); a bad one is a
+    /// caller-data / protocol-deviation failure, not something to retry.
+    #[error("VRF conflict tie-break is invalid: {0}")]
+    VrfTiebreak(String),
+
+    /// Returned by `crate::conflict::proof_compression` when a compressed
+    /// relay-chain proof (issue #63) is malformed, fails to fold, or fails
+    /// verification — a hop that doesn't link to the running accumulator, a
+    /// tail attestation whose signature doesn't verify, a tail that doesn't
+    /// fold up to the proof's accumulator, or a tail below the distinct-relay
+    /// quorum. A bad proof is bad on every attempt; the caller must obtain a
+    /// well-formed one (or escalate with the raw per-hop proofs instead).
+    #[error("compressed relay-chain proof is invalid: {0}")]
+    CompressedProofInvalid(String),
 
     /// Returned when queuing an Emergency-tier envelope would push the
     /// device past its configured spending guard (see
@@ -121,6 +148,21 @@ pub enum SyncEngineError {
     #[error("post-quantum signature verification failed")]
     PqVerificationFailed,
 
+    /// Returned when encryption or decryption operations fail.
+    #[error("encryption error: {0}")]
+    EncryptionError(String),
+
+    /// Returned when attempting to open an encrypted database without
+    /// providing the correct key, or when attempting to open an unencrypted
+    /// database as if it were encrypted.
+    #[error("database encryption key mismatch or missing key")]
+    EncryptionKeyMismatch,
+
+    /// Returned when an encrypted database is opened with a key that doesn't
+    /// match the one used to create it.
+    #[error("decryption failed: wrong key or corrupted data")]
+    DecryptionFailed,
+
     /// Returned by `SyncEngineDb::import_snapshot` when the target database
     /// already contains rows in any of its tables. Import is documented and
     /// implemented as reject-if-nonempty (see that function's doc comment for
@@ -141,6 +183,15 @@ pub enum SyncEngineError {
         "snapshot schema version {found} is incompatible with this build's expected version {expected}"
     )]
     IncompatibleSnapshotSchemaVersion { found: u32, expected: u32 },
+
+    #[error("TEE signing is requested but no genuine TEE is available on this device")]
+    TeeUnavailable,
+
+    #[error("TEE signing is currently a stub waiting for FFI integration")]
+    TeeSignerUnimplemented,
+
+    #[error("invalid or forged TEE attestation statement: {0}")]
+    InvalidAttestation(String),
 }
 
 impl SyncEngineError {
@@ -164,7 +215,12 @@ impl SyncEngineError {
     /// | `SequenceMismatch` | Permanent | The reserved sequence number doesn't match the one encoded in the transaction XDR. Retrying without correcting the sequence or the XDR will reproduce the same mismatch. |
     /// | `EnvelopeNotFound` | Permanent | A lookup by `message_id` returned nothing. The envelope was never enqueued, or has already been removed. Retrying the same lookup against the same DB will not materialise it. |
     /// | `InvalidStateTransition` | Permanent | A state-machine transition was attempted that is not in the legal transition graph. Retrying the same transition will never become legal; the caller has a logic bug. |
+    /// | `BackpressureWindowFull` | Transient | The per-relay dispatch window is at capacity. Acks landing or timeout releases will free slots; retrying after a short back-off is exactly the intended behaviour. |
+    /// | `DuplicateInFlight` | Permanent | The same message was acquired into the dispatch window twice without an intervening release. This is a caller bug; retrying identical inputs reproduces it. |
+    /// | `InvalidDispatchWindow` | Permanent | The window configuration violates an invariant (zero capacity or zero timeout). Fix the configuration and construct again. |
     /// | `UnresolvedConflict` | RequiresEscalation | Two envelopes compete for the same account/sequence slot and could not be resolved off-chain. Neither retrying nor giving up is correct — the dispute must be escalated to the on-chain `dispute-resolver` contract (see issue #002). |
+    /// | `VrfTiebreak` | Permanent | A supplied VRF tie-break proof is malformed, fails verification, or came from the wrong evaluator. The same bytes will fail the same way on every attempt; the resolution flow treats a tie with no valid tie-break as an ordinary `UnresolvedConflict` and escalates. |
+    /// | `CompressedProofInvalid` | Permanent | A compressed relay-chain proof (issue #63) failed to fold or verify. The same artifact fails identically on every attempt; a well-formed proof must be produced, or the escalation must fall back to the raw per-hop proofs. |
     /// | `EmergencyQueueLimitExceeded` | RequiresEscalation | The spending guard has tripped. A simple retry without user re-confirmation would be a security bypass. The embedding wallet must surface this to the user (biometric re-auth or explicit override) before queuing is retried. |
     /// | `UnknownMultisigSigner` | Permanent | The presented signing key is not in the account's authorised signer set. No retry will change the signer registry without an explicit key-management operation. |
     /// | `MultisigThresholdNotMet` | Permanent | The accumulated signer weight is below the required threshold. In this context the error means promotion was attempted prematurely; more signatures are needed, which is a caller flow issue, not a transient I/O problem. |
@@ -181,18 +237,29 @@ impl SyncEngineError {
             SyncEngineError::NoSequenceReserved(_) => ErrorClass::Permanent,
             SyncEngineError::SequenceOutOfOrder { .. } => ErrorClass::Permanent,
             SyncEngineError::InvalidEnvelope(_) => ErrorClass::Permanent,
+            SyncEngineError::VrfTiebreak(_) => ErrorClass::Permanent,
+            SyncEngineError::CompressedProofInvalid(_) => ErrorClass::Permanent,
             SyncEngineError::XdrParse(_) => ErrorClass::Permanent,
             SyncEngineError::SourceAccountMismatch { .. } => ErrorClass::Permanent,
             SyncEngineError::SequenceMismatch { .. } => ErrorClass::Permanent,
             SyncEngineError::EnvelopeNotFound(_) => ErrorClass::Permanent,
             SyncEngineError::InvalidStateTransition { .. } => ErrorClass::Permanent,
+            SyncEngineError::BackpressureWindowFull { .. } => ErrorClass::Transient,
+            SyncEngineError::DuplicateInFlight => ErrorClass::Permanent,
+            SyncEngineError::InvalidDispatchWindow(_) => ErrorClass::Permanent,
             SyncEngineError::UnknownMultisigSigner { .. } => ErrorClass::Permanent,
             SyncEngineError::MultisigThresholdNotMet { .. } => ErrorClass::Permanent,
             SyncEngineError::SerializationError(_) => ErrorClass::Permanent,
             SyncEngineError::DeserializationError(_) => ErrorClass::Permanent,
             SyncEngineError::PqVerificationFailed => ErrorClass::Permanent,
+            SyncEngineError::EncryptionError(_) => ErrorClass::Permanent,
+            SyncEngineError::EncryptionKeyMismatch => ErrorClass::Permanent,
+            SyncEngineError::DecryptionFailed => ErrorClass::Permanent,
             SyncEngineError::ImportTargetNotEmpty => ErrorClass::Permanent,
             SyncEngineError::IncompatibleSnapshotSchemaVersion { .. } => ErrorClass::Permanent,
+            SyncEngineError::TeeUnavailable => ErrorClass::Permanent,
+            SyncEngineError::TeeSignerUnimplemented => ErrorClass::Permanent,
+            SyncEngineError::InvalidAttestation(_) => ErrorClass::Permanent,
 
             // ── RequiresEscalation: needs human/on-chain intervention ──
             SyncEngineError::UnresolvedConflict(_) => ErrorClass::RequiresEscalation,
@@ -236,6 +303,8 @@ mod tests {
                 to: "settled".into(),
             },
             SyncEngineError::UnresolvedConflict("slot 42".into()),
+            SyncEngineError::VrfTiebreak("bad proof".into()),
+            SyncEngineError::CompressedProofInvalid("bad fold".into()),
             SyncEngineError::EmergencyQueueLimitExceeded {
                 current: 3,
                 max: 3,
@@ -256,11 +325,17 @@ mod tests {
             SyncEngineError::SerializationError(rmp_serde::encode::Error::UnknownLength),
             SyncEngineError::DeserializationError(rmp_serde::decode::Error::Syntax("test".into())),
             SyncEngineError::PqVerificationFailed,
+            SyncEngineError::EncryptionError("test encryption error".into()),
+            SyncEngineError::EncryptionKeyMismatch,
+            SyncEngineError::DecryptionFailed,
             SyncEngineError::ImportTargetNotEmpty,
             SyncEngineError::IncompatibleSnapshotSchemaVersion {
                 found: 1,
                 expected: 2,
             },
+            SyncEngineError::TeeUnavailable,
+            SyncEngineError::TeeSignerUnimplemented,
+            SyncEngineError::InvalidAttestation("forged".into()),
         ]
     }
 
@@ -344,6 +419,22 @@ mod tests {
     fn test_invalid_envelope_is_permanent() {
         assert_eq!(
             SyncEngineError::InvalidEnvelope("malformed".into()).classify(),
+            ErrorClass::Permanent
+        );
+    }
+
+    #[test]
+    fn test_vrf_tiebreak_is_permanent() {
+        assert_eq!(
+            SyncEngineError::VrfTiebreak("proof failed verification".into()).classify(),
+            ErrorClass::Permanent
+        );
+    }
+
+    #[test]
+    fn test_compressed_proof_invalid_is_permanent() {
+        assert_eq!(
+            SyncEngineError::CompressedProofInvalid("tail does not fold to acc".into()).classify(),
             ErrorClass::Permanent
         );
     }

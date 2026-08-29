@@ -112,7 +112,9 @@ Detects and (eventually) resolves double-spend conflicts arising from split mesh
 
 **Key responsibilities:**
 - `detector`: structural detection — two different envelopes claiming the same (account, sequence) slot can never both settle on-chain
-- `resolver`: **the hard, unsolved centerpiece** — deterministic off-chain resolution using timestamps, `RelayChainProof`s, and relay-node consensus. Currently every conflict falls through to `SyncEngineError::UnresolvedConflict`.
+- `resolver`: **the hard centerpiece** — deterministic off-chain resolution from a Sybil-resistant quorum of verified `RelayChainProof`s. `quorum_standing` exposes *why* a conflict is unresolved; conflicts it still can't settle escalate on-chain.
+- `vrf_tiebreak`: last-resort step for a genuine quorum-met tie — a `schnorrkel` VRF, evaluated by a deterministically-selected relay (never a conflicting party), producing a tie-break that is unpredictable in advance yet independently verifiable by anyone.
+- `proof_compression`: folds an arbitrarily long relay chain's per-hop `RelayChainProof`s into a constant-size `CompressedChainProof` (a hash-based recursive/IVC accumulator with a bounded tail of relay attestations). On-chain verification cost is flat in hop count instead of linear, so a legitimately long chain stays escalatable within a Soroban budget. New hops fold in incrementally as the envelope propagates. Trade-off (documented in the module): for chains longer than `TAIL_WINDOW`, the pre-tail prefix rests on the tail relays' recursive attestations rather than independent re-checking — a *working but not-yet-production* scheme, per issue #63. See `cargo run --release --example compression_bench`.
 
 ---
 
@@ -309,6 +311,21 @@ cargo test --test '*'
 - `settlement::tracker::SettlementStatus::can_transition_to` — checked exhaustively (not randomly; the state space is small enough that full coverage is stronger) against a hand-written reachability graph, across all 25 `(from, to)` pairs over the 5 `SettlementStatus` variants (`test_settlement_transition_matrix_is_exhaustive` in `src/settlement/tracker.rs`).
 
 These run as part of the normal test suite — no separate command is needed.
+
+### Adversarial Byzantine simulation (`#070`)
+
+`src/sim/` is a seeded simulation harness (stable API for `#049`-style work) plus three pluggable Byzantine agents — forged relay proofs, stale observation replay, and deliberate same-tick races. Same seed ⇒ identical execution trace.
+
+```bash
+# Required determinism + regression tests
+cargo test --test adversarial_agents_test
+
+# Bounded CI sweep (512 seeds / 60s in GitHub Actions; override locally)
+ADVERSARIAL_SWEEP_SEEDS=2000 ADVERSARIAL_SWEEP_BUDGET_SECS=120 \
+  cargo test --test adversarial_sweep -- --nocapture
+```
+
+The race agent is what surfaced that `detect_conflicts` / `detect_nway_conflicts` used to return `HashMap`-iteration order (insertion-order dependent). Both now sort their output so seeded traces stay reproducible — see `test_race_agent_detect_conflicts_output_is_insertion_order_independent`.
 
 ### Fuzz Testing
 
